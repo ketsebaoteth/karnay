@@ -1,20 +1,30 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import type { InventoryItem } from '~/types/inventory'
 
 const { items, saveItem, deleteItem, clearAllItems } = useInventory()
 
 const form = ref({
   name: '',
-  buyingPrice: 0,
-  price: 0,
-  quantity: 0
+  buyingPrice: null as number | null,
+  price: null as number | null,
+  quantity: null as number | null
 })
 
+const formError = ref('')
 const menuopen = ref(false)
 const targetEditId = ref<string | null>(null)
 const clearAllOpen = ref(false)
 const targetDeleteId = ref<string | null>(null)
 const expanded = ref(new Set<string>())
+const isSaving = ref(false)
+
+/* CSV import — disabled for now (overkill)
+const importOpen = ref(false)
+const importError = ref('')
+const importPreview = ref<InventoryItem[]>([])
+const isImporting = ref(false)
+const fileInputRef = ref<HTMLInputElement | null>(null)
+*/
 
 const toggleExpand = (id: string) => {
   if (expanded.value.has(id)) {
@@ -24,40 +34,71 @@ const toggleExpand = (id: string) => {
   }
 }
 
-const openAddModal = () => {
+const resetForm = () => {
+  form.value = { name: '', buyingPrice: null, price: null, quantity: null }
+  formError.value = ''
   targetEditId.value = null
-  form.value = { name: '', buyingPrice: 0, price: 0, quantity: 0 }
+}
+
+const openAddModal = () => {
+  resetForm()
   menuopen.value = true
 }
 
-const openEditModal = (item: any) => {
+const openEditModal = (item: InventoryItem) => {
   targetEditId.value = item.id
   form.value = {
     name: item.name,
-    buyingPrice: item.buyingPrice || 0,
+    buyingPrice: item.buyingPrice ?? 0,
     price: item.price,
     quantity: item.quantity
   }
+  formError.value = ''
   menuopen.value = true
 }
 
 const handleSaveProduct = async () => {
-  if (!form.value.name.trim()) return
-
-  const updatedItem = {
-    id: targetEditId.value ? targetEditId.value : 'item_' + Date.now(),
-    name: form.value.name.trim(),
-    buyingPrice: Number(form.value.buyingPrice),
-    price: Number(form.value.price),
-    quantity: Number(form.value.quantity),
-    lastUpdated: new Date().toISOString()
+  formError.value = ''
+  const name = form.value.name.trim()
+  if (!name) {
+    formError.value = 'Product name is required.'
+    return
   }
 
-  await saveItem(updatedItem)
+  const buyingPrice = Number(form.value.buyingPrice)
+  const price = Number(form.value.price)
+  const quantity = Number(form.value.quantity)
 
-  form.value = { name: '', buyingPrice: 0, price: 0, quantity: 0 }
-  targetEditId.value = null
-  menuopen.value = false
+  if (!Number.isFinite(buyingPrice) || buyingPrice < 0) {
+    formError.value = 'Buying cost must be a valid number ≥ 0.'
+    return
+  }
+  if (!Number.isFinite(price) || price < 0) {
+    formError.value = 'Retail price must be a valid number ≥ 0.'
+    return
+  }
+  if (!Number.isFinite(quantity) || quantity < 0 || !Number.isInteger(quantity)) {
+    formError.value = 'Stock quantity must be a whole number ≥ 0.'
+    return
+  }
+
+  isSaving.value = true
+  try {
+    const updatedItem: InventoryItem = {
+      id: targetEditId.value ? targetEditId.value : 'item_' + Date.now(),
+      name,
+      buyingPrice,
+      price,
+      quantity,
+      lastUpdated: new Date().toISOString()
+    }
+
+    await saveItem(updatedItem)
+    resetForm()
+    menuopen.value = false
+  } finally {
+    isSaving.value = false
+  }
 }
 
 const triggerClearAll = async () => {
@@ -72,7 +113,6 @@ const triggerClearAll = async () => {
   clearAllOpen.value = false
 }
 
-// Triggered cleanly via tap now
 const openDeleteModal = (id: string) => {
   targetDeleteId.value = id
 }
@@ -87,6 +127,14 @@ const executeDelete = async () => {
 const getTargetItemName = () => {
   return items.value.find(item => item.id === targetDeleteId.value)?.name || 'this item'
 }
+
+/* CSV import — disabled for now (overkill)
+const parseCsv = (text: string): InventoryItem[] => { ... }
+const openImportModal = () => { ... }
+const onFileSelected = async (event: Event) => { ... }
+const confirmImport = async () => { ... }
+const pasteSample = () => { ... }
+*/
 </script>
 
 <template>
@@ -102,11 +150,17 @@ const getTargetItemName = () => {
         <p class="text-zinc-500 text-xs mt-0.5">Manage products and wholesale values</p>
       </div>
 
-      <div class="flex items-center gap-2">
+      <div class="flex flex-wrap items-center gap-2">
         <NuxtLink to="/reports"
           class="px-4 py-3 bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-zinc-300 font-bold text-xs rounded-xl transition-all flex items-center gap-1.5">
           View Analytics →
         </NuxtLink>
+        <!-- CSV import disabled for now
+        <button @click="openImportModal"
+          class="px-4 py-3 bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-zinc-300 font-bold text-xs rounded-xl transition-all">
+          Import CSV
+        </button>
+        -->
         <button @click="openAddModal"
           class="bg-white text-black px-5 py-3 rounded-xl font-black text-xs shadow-lg hover:bg-zinc-200 transition-all active:scale-95">
           + Add Product
@@ -127,8 +181,12 @@ const getTargetItemName = () => {
         class="bg-zinc-800 hover:bg-zinc-700 text-white text-xs font-bold px-5 py-2.5 rounded-xl transition-all">
         Create Your First Product Entry
       </button>
+      <!-- CSV import disabled for now
+      <button @click="openImportModal" ...>Import from CSV</button>
+      -->
     </div>
 
+    <!-- Add / Edit Modal -->
     <Transition name="modal">
       <div v-if="menuopen" class="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4 backdrop-blur-sm"
         @click.self="menuopen = false">
@@ -149,13 +207,13 @@ const getTargetItemName = () => {
               <div>
                 <label class="block text-xs font-bold uppercase tracking-wider text-zinc-500 mb-1.5 pl-1">Buying Cost
                   (ETB)</label>
-                <input v-model="form.buyingPrice" type="number" step="any" placeholder="0.00"
+                <input v-model.number="form.buyingPrice" type="number" min="0" step="any" placeholder="0.00"
                   class="w-full bg-zinc-800/80 border border-zinc-700/50 rounded-xl px-4 py-3.5 text-sm focus:outline-none focus:border-zinc-500 placeholder-zinc-600 transition-all">
               </div>
               <div>
                 <label class="block text-xs font-bold uppercase tracking-wider text-zinc-500 mb-1.5 pl-1">Retail Price
                   (ETB)</label>
-                <input v-model="form.price" type="number" step="any" placeholder="0.00"
+                <input v-model.number="form.price" type="number" min="0" step="any" placeholder="0.00"
                   class="w-full bg-zinc-800/80 border border-zinc-700/50 rounded-xl px-4 py-3.5 text-sm focus:outline-none focus:border-zinc-500 placeholder-zinc-600 transition-all">
               </div>
             </div>
@@ -163,25 +221,32 @@ const getTargetItemName = () => {
             <div>
               <label class="block text-xs font-bold uppercase tracking-wider text-zinc-500 mb-1.5 pl-1">Stock
                 Quantity</label>
-              <input v-model="form.quantity" type="number" placeholder="0"
+              <input v-model.number="form.quantity" type="number" min="0" step="1" placeholder="0"
                 class="w-full bg-zinc-800/80 border border-zinc-700/50 rounded-xl px-4 py-3.5 text-sm focus:outline-none focus:border-zinc-500 placeholder-zinc-600 transition-all">
             </div>
+
+            <p v-if="formError" class="text-red-400 text-xs font-medium px-1">{{ formError }}</p>
           </div>
 
           <div class="flex gap-3 mt-8">
-            <button @click="menuopen = false"
-              class="flex-1 py-3.5 bg-zinc-800 text-zinc-300 font-bold rounded-xl hover:bg-zinc-700 text-sm transition-colors">
+            <button @click="menuopen = false" :disabled="isSaving"
+              class="flex-1 py-3.5 bg-zinc-800 text-zinc-300 font-bold rounded-xl hover:bg-zinc-700 text-sm transition-colors disabled:opacity-50">
               Cancel
             </button>
-            <button @click="handleSaveProduct"
-              class="flex-1 py-3.5 bg-white text-black font-black rounded-xl hover:bg-zinc-200 text-sm transition-colors">
-              {{ targetEditId ? 'Save Changes' : 'Add Item' }}
+            <button @click="handleSaveProduct" :disabled="isSaving"
+              class="flex-1 py-3.5 bg-white text-black font-black rounded-xl hover:bg-zinc-200 text-sm transition-colors disabled:opacity-50">
+              {{ isSaving ? 'Saving…' : (targetEditId ? 'Save Changes' : 'Add Item') }}
             </button>
           </div>
         </div>
       </div>
     </Transition>
 
+    <!-- CSV import modal disabled for now
+    <Transition name="modal"> ... Import CSV Modal ... </Transition>
+    -->
+
+    <!-- Delete Modal -->
     <Transition name="modal">
       <div v-if="targetDeleteId !== null"
         class="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4 backdrop-blur-sm"
@@ -206,6 +271,7 @@ const getTargetItemName = () => {
       </div>
     </Transition>
 
+    <!-- Clear All Modal -->
     <Transition name="modal">
       <div v-if="clearAllOpen"
         class="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4 backdrop-blur-sm"
@@ -274,11 +340,11 @@ const getTargetItemName = () => {
               <div class="flex items-center gap-2">
                 <button @click.stop="openEditModal(item)"
                   class="bg-zinc-800 hover:bg-zinc-700 text-zinc-200 px-3 py-1.5 rounded-lg font-bold text-[11px] transition-colors flex items-center gap-1">
-                  ✏️ Edit
+                  Edit
                 </button>
                 <button @click.stop="openDeleteModal(item.id)"
                   class="bg-red-950/60 hover:bg-red-900/80 text-red-400 px-3 py-1.5 rounded-lg font-bold text-[11px] border border-red-900/30 transition-colors flex items-center gap-1">
-                  🗑️ Delete
+                  Delete
                 </button>
               </div>
             </div>

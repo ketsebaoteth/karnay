@@ -32,25 +32,54 @@ export const useInventory = () => {
     await loadItems()
   }
 
+  /* CSV bulk import — disabled for now
+  const saveItemsBulk = async (newItems: InventoryItem[]) => {
+    for (const item of newItems) {
+      const rawItem = JSON.parse(JSON.stringify(toRaw(item)))
+      await db.setItem(rawItem.id, rawItem)
+    }
+    await loadItems()
+  }
+  */
+
   const deleteItem = async (id: string) => {
     await db.removeItem(id)
     await loadItems()
   }
 
-  const recordSale = async (cartItems: any[]) => {
+  const recordSale = async (cartItems: Array<{
+    id: string
+    name: string
+    price: number
+    quantity: number
+  }>) => {
     const rawCartItems = JSON.parse(JSON.stringify(toRaw(cartItems)))
     let totalRevenue = 0
     let totalCost = 0
 
-    const enrichedItems = rawCartItems.map((cartItem: any) => {
+    const enrichedItems = rawCartItems.map((cartItem: {
+      id: string
+      name: string
+      price: number
+      quantity: number
+    }) => {
       const liveItem = items.value.find(i => i.id === cartItem.id)
-      const buyingPrice = liveItem?.buyingPrice || cartItem.price
+      // Prefer live wholesale cost; never fall back to retail price (that zeros profit)
+      const buyingPrice = liveItem?.buyingPrice ?? 0
 
       totalRevenue += cartItem.price * cartItem.quantity
       totalCost += buyingPrice * cartItem.quantity
 
       return { ...cartItem, buyingPrice }
     })
+
+    // Re-check stock so we never go negative on double-submit or stale carts
+    for (const cartItem of enrichedItems) {
+      const item = items.value.find(i => i.id === cartItem.id)
+      if (!item || item.quantity < cartItem.quantity) {
+        throw new Error(`Not enough stock for "${cartItem.name}"`)
+      }
+    }
 
     const sale: SaleRecord = {
       id: 'sale_' + Date.now(),
@@ -90,6 +119,7 @@ export const useInventory = () => {
     items,
     salesHistory,
     saveItem,
+    // saveItemsBulk, // CSV import disabled
     deleteItem,
     recordSale,
     loadItems,

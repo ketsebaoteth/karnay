@@ -1,8 +1,4 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
-
-const { items, loadItems, recordSale } = useInventory()
-
 interface CartItem {
   id: string
   name: string
@@ -11,10 +7,14 @@ interface CartItem {
   maxStock: number
 }
 
+const { items, loadItems, recordSale } = useInventory()
+
 const cart = ref<CartItem[]>([])
 const searchQuery = ref('')
 const showSuggestions = ref(false)
 const showConfirmModal = ref(false)
+const isProcessing = ref(false)
+const checkoutError = ref('')
 
 onMounted(async () => {
   await loadItems()
@@ -32,23 +32,42 @@ const filteredSuggestions = computed(() => {
   })
 })
 
-const addToCart = (product: any) => {
+/** Products still available to sell (respects qty already in cart). */
+const browsableProducts = computed(() => {
+  if (!items.value || items.value.length === 0) return []
+  return items.value.filter(item => {
+    if (!item || item.quantity <= 0) return false
+    const cartMatch = cart.value.find(c => c.id === item.id)
+    const availableStock = item.quantity - (cartMatch?.quantity || 0)
+    return availableStock > 0
+  })
+})
+
+const availableStockFor = (productId: string, shelfQty: number) => {
+  const cartMatch = cart.value.find(c => c.id === productId)
+  return shelfQty - (cartMatch?.quantity || 0)
+}
+
+const addToCart = (product: { id: string; name: string; price: number; quantity: number }) => {
   if (!product) return
 
+  const live = items.value.find(i => i.id === product.id)
+  const stock = live?.quantity ?? product.quantity
   const existingIndex = cart.value.findIndex(c => c.id === product.id)
 
   if (existingIndex > -1) {
     const existingItem = cart.value[existingIndex]
-    if (existingItem && existingItem.quantity < product.quantity) {
+    if (existingItem && existingItem.quantity < stock) {
       existingItem.quantity++
+      existingItem.maxStock = stock
     }
-  } else {
+  } else if (stock > 0) {
     cart.value.push({
       id: product.id,
       name: product.name,
       price: product.price,
       quantity: 1,
-      maxStock: product.quantity
+      maxStock: stock
     })
   }
 
@@ -59,6 +78,10 @@ const addToCart = (product: any) => {
 const updateQuantity = (index: number, change: number) => {
   const target = cart.value[index]
   if (!target) return
+
+  // Refresh max from live inventory
+  const live = items.value.find(i => i.id === target.id)
+  if (live) target.maxStock = live.quantity
 
   const newQty = target.quantity + change
 
@@ -84,12 +107,19 @@ const cartTotal = computed(() => {
 })
 
 const processCheckout = async () => {
-  if (cart.value.length === 0) return
+  if (cart.value.length === 0 || isProcessing.value) return
 
-  await recordSale(cart.value)
-
-  cart.value = []
-  showConfirmModal.value = false
+  isProcessing.value = true
+  checkoutError.value = ''
+  try {
+    await recordSale(cart.value)
+    cart.value = []
+    showConfirmModal.value = false
+  } catch (e: any) {
+    checkoutError.value = e?.message || 'Checkout failed. Please try again.'
+  } finally {
+    isProcessing.value = false
+  }
 }
 </script>
 
@@ -129,9 +159,35 @@ const processCheckout = async () => {
             class="w-full text-left p-3 hover:bg-zinc-800/60 rounded-xl transition-colors flex justify-between items-center">
             <div>
               <div class="font-bold text-sm text-zinc-200">{{ product.name }}</div>
-              <div class="text-xs text-zinc-500 mt-0.5">In Stock: {{ product.quantity }}</div>
+              <div class="text-xs text-zinc-500 mt-0.5">Available: {{ availableStockFor(product.id, product.quantity) }}</div>
             </div>
             <div class="font-black text-sm text-emerald-400">{{ product.price }} ETB</div>
+          </button>
+        </div>
+      </div>
+
+      <!-- Browse all sellable products (no search required) -->
+      <div v-if="!searchQuery.trim()" class="mt-6">
+        <h2 class="text-xs font-bold uppercase tracking-wider text-zinc-500 mb-3 px-1">Tap to add</h2>
+
+        <div v-if="browsableProducts.length === 0"
+          class="bg-zinc-900/40 border border-zinc-800/60 border-dashed rounded-2xl p-6 text-center text-zinc-600 text-sm">
+          No products in stock. Add items on the inventory page first.
+        </div>
+
+        <div v-else class="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-72 overflow-y-auto pr-0.5">
+          <button v-for="product in browsableProducts" :key="product.id" type="button" @click="addToCart(product)"
+            class="w-full text-left bg-zinc-900 border border-zinc-800/80 hover:border-zinc-700 hover:bg-zinc-800/50 active:scale-[0.99] rounded-2xl p-4 transition-all flex justify-between items-center gap-3">
+            <div class="min-w-0">
+              <div class="font-bold text-sm text-zinc-100 truncate">{{ product.name }}</div>
+              <div class="text-xs text-zinc-500 mt-0.5">
+                {{ availableStockFor(product.id, product.quantity) }} left
+              </div>
+            </div>
+            <div class="shrink-0 text-right">
+              <div class="font-black text-sm text-emerald-400">{{ product.price }} ETB</div>
+              <div class="text-[10px] text-zinc-500 font-bold mt-0.5">+ Add</div>
+            </div>
           </button>
         </div>
       </div>
@@ -184,7 +240,7 @@ const processCheckout = async () => {
           <div class="text-xs text-zinc-500 uppercase tracking-wider font-bold">Grand Total</div>
           <div class="text-2xl font-black text-emerald-400 mt-0.5">{{ cartTotal }} ETB</div>
         </div>
-        <button @click="showConfirmModal = true"
+        <button @click="showConfirmModal = true; checkoutError = ''"
           class="bg-emerald-500 hover:bg-emerald-600 text-black px-6 py-3.5 rounded-2xl font-black tracking-tight text-sm active:scale-95 transition-all shadow-lg shadow-emerald-500/10 flex items-center gap-2">
           Confirm Checkout
           <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none"
@@ -208,15 +264,16 @@ const processCheckout = async () => {
         <h3 class="text-lg font-black tracking-tight">Complete Sale?</h3>
         <p class="text-zinc-500 text-xs mt-1 px-4">This will deduct the quantities from inventory and log the
           transaction record.</p>
+        <p v-if="checkoutError" class="text-red-400 text-xs mt-3 font-medium">{{ checkoutError }}</p>
 
         <div class="grid grid-cols-2 gap-3 mt-6">
-          <button @click="showConfirmModal = false"
-            class="bg-zinc-800 hover:bg-zinc-700 py-3 rounded-xl font-bold text-sm text-zinc-300 transition-colors">
+          <button @click="showConfirmModal = false" :disabled="isProcessing"
+            class="bg-zinc-800 hover:bg-zinc-700 py-3 rounded-xl font-bold text-sm text-zinc-300 transition-colors disabled:opacity-50">
             Cancel
           </button>
-          <button @click="processCheckout"
-            class="bg-emerald-500 hover:bg-emerald-600 py-3 rounded-xl font-black text-sm text-black transition-colors">
-            Yes, Complete
+          <button @click="processCheckout" :disabled="isProcessing"
+            class="bg-emerald-500 hover:bg-emerald-600 py-3 rounded-xl font-black text-sm text-black transition-colors disabled:opacity-50">
+            {{ isProcessing ? 'Saving…' : 'Yes, Complete' }}
           </button>
         </div>
       </div>
